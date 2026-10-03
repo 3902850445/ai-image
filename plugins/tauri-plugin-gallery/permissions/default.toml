@@ -1,0 +1,5 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[default]
+description = """gallery 插件默认权限（仅 Rust 内部调用，无前端 command）"""
+permissions = []
