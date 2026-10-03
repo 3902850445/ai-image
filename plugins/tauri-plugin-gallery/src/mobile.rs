@@ -1,4 +1,4 @@
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
 use tauri::{
     plugin::{PluginApi, PluginHandle},
     AppHandle, Runtime,
@@ -17,7 +17,9 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
     api: PluginApi<R, C>,
 ) -> crate::Result<Gallery<R>> {
     #[cfg(target_os = "android")]
-    let handle = api.register_android_plugin(PLUGIN_IDENTIFIER, "GalleryPlugin")?;
+    let handle = api
+        .register_android_plugin(PLUGIN_IDENTIFIER, "GalleryPlugin")
+        .map_err(|e| crate::Error::Invoke(e.to_string()))?;
     #[cfg(target_os = "ios")]
     let handle = api.register_ios_plugin(init_plugin_gallery)?;
     Ok(Gallery(handle))
@@ -27,6 +29,6 @@ impl<R: Runtime> Gallery<R> {
     pub fn save_to_gallery(&self, payload: SaveRequest) -> crate::Result<SaveResponse> {
         self.0
             .run_mobile_plugin("saveToGallery", payload)
-            .map_err(Into::into)
+            .map_err(|e| crate::Error::Invoke(e.to_string()))
     }
 }

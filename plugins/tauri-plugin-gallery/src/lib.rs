@@ -1,8 +1,5 @@
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tauri::{
-    plugin::{Builder, PluginApi, PluginHandle},
-    AppHandle, Manager, Runtime,
-};
+use serde::{Deserialize, Serialize};
+use tauri::{plugin::Builder, Manager, Runtime};
 
 mod error;
 pub use error::{Error, Result};

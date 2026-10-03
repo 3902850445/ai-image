@@ -19,7 +19,7 @@ import {
 } from "./lib/api";
 
 // ---------------- 状态 ----------------
-const APP_VERSION = "v0.2.0";
+const APP_VERSION = "v0.3.0";
 
 const settings = ref<Settings>(structuredClone(DEFAULT_SETTINGS));
 const settingsLoaded = ref(false);

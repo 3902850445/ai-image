@@ -17,15 +17,16 @@ export default defineConfig(() => ({
   server: {
     port: 1420,
     strictPort: true,
-    // 固定监听 IPv4 回环：避免 Node 只绑 [::1] 导致 WebView2(走 127.0.0.1) 无法访问
-    host: "127.0.0.1",
+    // 桌面 dev：默认监听 IPv4 回环（避免 Node 只绑 [::1] 导致 WebView2 连不上）
+    // android dev：tauri CLI 会注入 TAURI_DEV_HOST（宿主机局域网 IP），vite 需监听该地址供模拟器/真机访问
+    host: host || "127.0.0.1",
     hmr: host
       ? {
-            protocol: "ws",
-            host,
-            port: 1421,
-          }
-        : undefined,
+          protocol: "ws",
+          host,
+          port: 1421,
+        }
+      : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
