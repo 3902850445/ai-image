@@ -12,9 +12,8 @@ dist
 dist-ssr
 *.local
 
-# Rust 构建产物与生成工程
+# Rust 构建产物
 src-tauri/target
-src-tauri/gen
 
 # 凭据文件（严禁提交）
 git_key.txt
