@@ -126,11 +126,129 @@ async fn extract_image(json: serde_json::Value) -> Result<GenResult, String> {
     Err("供应商没有返回图片".to_string())
 }
 
+/// 供应商连通测试结果
+#[derive(Serialize)]
+pub struct TestResult {
+    /// 请求耗时（毫秒）
+    pub latency_ms: u64,
+    /// 供应商返回的模型总数（data 数组长度）
+    pub model_count: usize,
+}
+
+/// 供应商连通测试：GET {baseUrl}/v1/models
+#[tauri::command]
+async fn test_provider(base_url: String, api_key: String) -> Result<TestResult, String> {
+    let root = normalize_base(&base_url);
+    if root.is_empty() {
+        return Err("API 地址不能为空，请先在设置中填写".into());
+    }
+    let url = format!("{root}/v1/models");
+    log_line("INFO", &format!("测试供应商连通性 → {url}"));
+    let start = std::time::Instant::now();
+
+    let client = http_client(30)?;
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key.trim()))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log_line("ERROR", &format!("连通测试失败 → {url}：{e}"));
+            return Err(format!("连接失败：{e}"));
+        }
+    };
+
+    let ms = start.elapsed().as_millis() as u64;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    log_line(
+        "INFO",
+        &format!("连通测试返回 HTTP {}（{}ms）", status.as_u16(), ms),
+    );
+
+    if !status.is_success() {
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        let msg = json["error"]["message"]
+            .as_str()
+            .unwrap_or("供应商返回了错误");
+        return Err(format!("HTTP {}：{msg}", status.as_u16()));
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("响应不是有效 JSON：{e}"))?;
+    let model_count = json["data"].as_array().map(|a| a.len()).unwrap_or(0);
+    Ok(TestResult {
+        latency_ms: ms,
+        model_count,
+    })
+}
+
+/// 拉取模型列表：GET {baseUrl}/v1/models → data[].id（排序去重后返回）
+#[tauri::command]
+async fn fetch_models(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    let root = normalize_base(&base_url);
+    if root.is_empty() {
+        return Err("API 地址不能为空，请先在设置中填写".into());
+    }
+    let url = format!("{root}/v1/models");
+    log_line("INFO", &format!("拉取模型列表 → {url}"));
+
+    let client = http_client(30)?;
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key.trim()))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log_line("ERROR", &format!("拉取模型失败 → {url}：{e}"));
+            return Err(format!("连接失败：{e}"));
+        }
+    };
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        log_line(
+            "ERROR",
+            &format!(
+                "拉取模型返回 HTTP {}，响应：{}",
+                status.as_u16(),
+                clip(&text, 300)
+            ),
+        );
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        let msg = json["error"]["message"]
+            .as_str()
+            .unwrap_or("供应商返回了错误");
+        return Err(format!("HTTP {}：{msg}", status.as_u16()));
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("响应不是有效 JSON：{e}"))?;
+    let mut ids: Vec<String> = json["data"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["id"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    log_line("INFO", &format!("拉取到 {} 个模型", ids.len()));
+    Ok(ids)
+}
+
 /// 文生图：POST {baseUrl}/v1/images/generations
 #[tauri::command]
 async fn generate_image(
     base_url: String,
     api_key: String,
+    model: String,
     prompt: String,
     size: String,
     quality: String,
@@ -146,10 +264,15 @@ async fn generate_image(
     if prompt.trim().is_empty() {
         return Err("提示词不能为空".into());
     }
+    let model_name = if model.trim().is_empty() {
+        "gpt-image-2".to_string()
+    } else {
+        model.trim().to_string()
+    };
 
     let url = format!("{root}/v1/images/generations");
     let mut body = serde_json::json!({
-        "model": "gpt-image-2",
+        "model": model_name.clone(),
         "prompt": prompt,
         "n": 1,
         "size": size,
@@ -163,7 +286,7 @@ async fn generate_image(
     log_line(
         "INFO",
         &format!(
-            "文生图请求 → {url}（size={}，quality={}，response_format={:?}）",
+            "文生图请求 → {url}（model={model_name}，size={}，quality={}，response_format={:?}）",
             body["size"].as_str().unwrap_or(""),
             body["quality"].as_str().unwrap_or(""),
             body["response_format"].as_str()
@@ -234,7 +357,9 @@ async fn generate_image(
         ),
     );
 
-    extract_image(json).await
+    let mut result = extract_image(json).await?;
+    result.model = model_name;
+    Ok(result)
 }
 
 /// 图生图：POST {baseUrl}/v1/images/edits（multipart，参考图字段名 image）
@@ -242,6 +367,7 @@ async fn generate_image(
 async fn edit_image(
     base_url: String,
     api_key: String,
+    model: String,
     prompt: String,
     size: String,
     quality: String,
@@ -263,17 +389,22 @@ async fn edit_image(
     }
 
     let url = format!("{root}/v1/images/edits");
+    let model_name = if model.trim().is_empty() {
+        "gpt-image-2".to_string()
+    } else {
+        model.trim().to_string()
+    };
     log_line(
         "INFO",
         &format!(
-            "图生图请求 → {url}（参考图 {} 张，size={size}，quality={quality}）",
+            "图生图请求 → {url}（model={model_name}，参考图 {} 张，size={size}，quality={quality}）",
             images_b64.len()
         ),
     );
     let start = std::time::Instant::now();
     let mut form = reqwest::multipart::Form::new()
         .text("prompt", prompt)
-        .text("model", "gpt-image-2")
+        .text("model", model_name.clone())
         .text("size", size)
         .text("quality", quality)
         .text("n", "1");
@@ -356,7 +487,9 @@ async fn edit_image(
         ),
     );
 
-    extract_image(json).await
+    let mut result = extract_image(json).await?;
+    result.model = model_name;
+    Ok(result)
 }
 
 /// 清理文件名中的非法字符（Windows/桌面平台通用）
@@ -466,7 +599,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_image,
             edit_image,
-            save_image
+            save_image,
+            test_provider,
+            fetch_models
         ])
         .setup(|_app| {
             log_line("INFO", "应用启动完成");

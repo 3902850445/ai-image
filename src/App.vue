@@ -5,13 +5,16 @@ import {
   callGenerate,
   computeSize,
   DEFAULT_SETTINGS,
+  fetchModels,
   imageSize,
   loadSettings,
   MODEL_NAME,
   pickDirectory,
+  pickImageModels,
   RATIOS,
   saveImageFile,
   saveSettings,
+  testProvider,
   TIERS,
   timestampName,
   type Provider,
@@ -19,7 +22,7 @@ import {
 } from "./lib/api";
 
 // ---------------- 状态 ----------------
-const APP_VERSION = "v0.3.0";
+const APP_VERSION = "v0.4.0";
 
 const settings = ref<Settings>(structuredClone(DEFAULT_SETTINGS));
 const settingsLoaded = ref(false);
@@ -110,6 +113,61 @@ const activeProvider = computed<Provider | null>(() => {
 
 const hasApiKey = computed(() => !!activeProvider.value && activeProvider.value.apiKey.trim() !== "");
 
+// ---------------- 模型选择与供应商测试 ----------------
+const selectedModel = computed({
+  get: () => activeProvider.value?.selectedModel || MODEL_NAME,
+  set: (v: string) => {
+    if (activeProvider.value) activeProvider.value.selectedModel = v.trim();
+  },
+});
+const modelOptions = computed(() => {
+  const p = activeProvider.value;
+  return p?.models && p.models.length > 0 ? p.models : [MODEL_NAME];
+});
+
+const testStates = ref<Record<string, { text: string; ok: boolean | null }>>({});
+
+async function testConn(p: Provider) {
+  testStates.value[p.id] = { text: "测试中…", ok: null };
+  try {
+    const r = await testProvider(p.baseUrl, p.apiKey);
+    testStates.value[p.id] = {
+      text: `✓ 连通（${r.latency_ms}ms，${r.model_count} 个模型）`,
+      ok: true,
+    };
+    log(`供应商 ${p.name} 连通测试成功：${r.latency_ms}ms，${r.model_count} 个模型`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    testStates.value[p.id] = { text: `✗ ${msg}`, ok: false };
+    log(`供应商 ${p.name} 连通测试失败：${msg}`, "error");
+  }
+}
+
+async function pullModels(p: Provider) {
+  testStates.value[p.id] = { text: "拉取模型中…", ok: null };
+  try {
+    const all = await fetchModels(p.baseUrl, p.apiKey);
+    const filtered = pickImageModels(all);
+    const finalList = filtered.length > 0 ? filtered : all;
+    p.models = finalList;
+    if (!finalList.includes(p.selectedModel)) {
+      p.selectedModel = finalList[0] ?? MODEL_NAME;
+    }
+    testStates.value[p.id] = {
+      text:
+        filtered.length > 0
+          ? `✓ 共 ${all.length} 个模型，图片类 ${filtered.length} 个`
+          : `✓ 共 ${all.length} 个模型（未见 image/banana 命名，已保留全部）`,
+      ok: true,
+    };
+    log(`供应商 ${p.name} 拉取模型：共 ${all.length} 个，入选 ${finalList.length} 个`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    testStates.value[p.id] = { text: `✗ ${msg}`, ok: false };
+    log(`供应商 ${p.name} 拉取模型失败：${msg}`, "error");
+  }
+}
+
 const outputSizeLabel = computed(() => computeSize(ratio.value, pixelTier.value));
 
 const qualityLabel = computed(() => {
@@ -195,6 +253,7 @@ async function runOne(): Promise<void> {
       ? await callEdit({
           baseUrl: provider.baseUrl,
           apiKey: provider.apiKey,
+          model: provider.selectedModel || MODEL_NAME,
           prompt: prompt.value,
           size: outputSizeLabel.value,
           quality: quality.value,
@@ -204,6 +263,7 @@ async function runOne(): Promise<void> {
       : await callGenerate({
           baseUrl: provider.baseUrl,
           apiKey: provider.apiKey,
+          model: provider.selectedModel || MODEL_NAME,
           prompt: prompt.value,
           size: outputSizeLabel.value,
           quality: quality.value,
@@ -255,7 +315,7 @@ async function generate() {
   totalCount.value = count.value;
   pendingCount.value = count.value;
   log(
-    `开始生成 ${count.value} 张（${MODEL_NAME}，${outputSizeLabel.value}，质量：${qualityLabel.value}，` +
+    `开始生成 ${count.value} 张（${selectedModel.value}，${outputSizeLabel.value}，质量：${qualityLabel.value}，` +
       `${useEditText.value ? `图生图 ${refImages.value.length} 张参考图` : "文生图"}，并发 ${Math.min(activeProvider.value.maxConcurrency, count.value)}）`,
   );
 
@@ -387,6 +447,8 @@ function addProvider() {
     apiKey: "",
     supportsResponseFormat: true,
     maxConcurrency: 2,
+    models: [],
+    selectedModel: MODEL_NAME,
   });
   editSettings.value.activeProviderId = id;
 }
@@ -468,7 +530,7 @@ watch(
           class="rounded-full px-2.5 py-1 text-[11px]"
           style="background: rgb(52 106 234 / 0.08); color: #346aea"
         >
-          {{ activeProvider.name }} · {{ MODEL_NAME }}
+          {{ activeProvider.name }} · {{ selectedModel }}
         </span>
         <button
           class="flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs transition-colors hover:bg-black/10"
@@ -541,6 +603,24 @@ watch(
                 清空全部参考图
               </button>
             </p>
+          </div>
+
+          <!-- 模型选择 -->
+          <div class="mb-4">
+            <label class="mb-2.5 block text-sm font-medium" style="color: #1a1a1a">
+              模型
+              <span class="ml-1 text-[10px] font-normal" style="color: #3c3a3a">（可在设置里拉取供应商模型列表，也可手动输入）</span>
+            </label>
+            <input
+              v-model="selectedModel"
+              list="model-options"
+              placeholder="模型 ID，如 gpt-image-2 / gemini-3.1-flash-image"
+              class="h-10 w-full rounded-lg border px-3 text-xs outline-none transition-colors focus:border-[#346aea]"
+              style="background: rgb(0 0 0 / 0.04); border-color: rgb(0 0 0 / 0.15); color: #1a1a1a"
+            />
+            <datalist id="model-options">
+              <option v-for="m in modelOptions" :key="m" :value="m" />
+            </datalist>
           </div>
 
           <!-- 提示词 -->
@@ -667,7 +747,7 @@ watch(
           style="border-color: rgb(0 0 0 / 0.1); background: #fff"
         >
           <div class="flex items-center gap-2 text-xs" style="color: #616161">
-            <span class="truncate">{{ activeProvider?.name ?? '未配置供应商' }} · {{ MODEL_NAME }}</span>
+            <span class="truncate">{{ activeProvider?.name ?? '未配置供应商' }} · {{ selectedModel }}</span>
             <span class="ml-auto shrink-0 text-[10px]" style="color: #919191">
               {{ generating ? `生成中 ${doneCount}/${totalCount}` : `并发 ${activeProvider?.maxConcurrency ?? 1} · ${outputSizeLabel}` }}
             </span>
@@ -871,6 +951,46 @@ watch(
                     删除
                   </button>
                 </div>
+                <!-- 连通测试 / 模型拉取 -->
+                <div class="mb-3 flex flex-wrap items-center gap-2">
+                  <button
+                    class="flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] transition-colors hover:opacity-90"
+                    style="background: rgb(52 106 234 / 0.08); color: #346aea"
+                    @click="testConn(p)"
+                  >
+                    测试连接
+                  </button>
+                  <button
+                    class="flex h-8 items-center gap-1 rounded-lg px-2.5 text-[11px] transition-colors hover:opacity-90"
+                    style="background: rgb(22 163 74 / 0.08); color: #16a34a"
+                    @click="pullModels(p)"
+                  >
+                    拉取模型列表
+                  </button>
+                  <span
+                    v-if="testStates[p.id]"
+                    class="ml-auto truncate text-[11px]"
+                    :style="{
+                      color:
+                        testStates[p.id].ok === true
+                          ? '#16a34a'
+                          : testStates[p.id].ok === false
+                            ? '#d3482b'
+                            : '#616161',
+                    }"
+                    :title="testStates[p.id].text"
+                  >
+                    {{ testStates[p.id].text }}
+                  </span>
+                </div>
+                <p
+                  v-if="p.models.length > 0"
+                  class="mb-3 truncate text-[11px]"
+                  style="color: #616161"
+                  :title="p.models.join('、')"
+                >
+                  图片类模型（{{ p.models.length }}）：{{ p.models.slice(0, 5).join('、') }}{{ p.models.length > 5 ? ' …' : '' }}
+                </p>
                 <div class="grid grid-cols-2 gap-3">
                   <label class="block text-xs" style="color: #616161">
                     名称

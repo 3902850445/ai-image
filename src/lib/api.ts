@@ -10,6 +10,10 @@ export interface Provider {
   apiKey: string;
   supportsResponseFormat: boolean;
   maxConcurrency: number;
+  /** 可用模型列表（设置里拉取后存储） */
+  models: string[];
+  /** 当前选中的模型 */
+  selectedModel: string;
 }
 
 export interface Settings {
@@ -25,6 +29,12 @@ export interface Settings {
 
 export const MODEL_NAME = "gpt-image-2";
 
+/** 模型过滤：包含 image / banana / imagen 的模型优先保留 */
+export function pickImageModels(ids: string[]): string[] {
+  const matched = ids.filter((id) => /image|banana|imagen/i.test(id));
+  return matched.length > 0 ? matched.sort() : [];
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   providers: [
     {
@@ -34,6 +44,8 @@ export const DEFAULT_SETTINGS: Settings = {
       apiKey: "",
       supportsResponseFormat: true,
       maxConcurrency: 4,
+      models: [],
+      selectedModel: MODEL_NAME,
     },
     {
       id: "yunwu",
@@ -42,6 +54,8 @@ export const DEFAULT_SETTINGS: Settings = {
       apiKey: "",
       supportsResponseFormat: false,
       maxConcurrency: 1,
+      models: [],
+      selectedModel: MODEL_NAME,
     },
   ],
   activeProviderId: "nowcoding",
@@ -63,13 +77,17 @@ export async function loadSettings(): Promise<Settings> {
     const store = await getStore();
     const saved = await store.get<Partial<Settings>>("settings");
     if (!saved) return structuredClone(DEFAULT_SETTINGS);
-    // 与默认值合并，保证新增字段有兜底
+    // 与默认值合并，保证新增字段有兜底（旧配置的供应商补 models/selectedModel）
     return {
       ...structuredClone(DEFAULT_SETTINGS),
       ...saved,
       providers:
         saved.providers && saved.providers.length > 0
-          ? saved.providers
+          ? saved.providers.map((p) => ({
+              ...p,
+              models: p.models ?? [],
+              selectedModel: p.selectedModel ?? MODEL_NAME,
+            }))
           : structuredClone(DEFAULT_SETTINGS.providers),
     };
   } catch {
@@ -163,9 +181,26 @@ export interface GenResult {
   model: string;
 }
 
+/** 供应商连通测试结果 */
+export interface TestResult {
+  latency_ms: number;
+  model_count: number;
+}
+
+/** 测试供应商连通性（GET /v1/models） */
+export async function testProvider(baseUrl: string, apiKey: string): Promise<TestResult> {
+  return invoke<TestResult>("test_provider", { baseUrl, apiKey });
+}
+
+/** 拉取供应商全部模型 ID 列表 */
+export async function fetchModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  return invoke<string[]>("fetch_models", { baseUrl, apiKey });
+}
+
 export async function callGenerate(args: {
   baseUrl: string;
   apiKey: string;
+  model: string;
   prompt: string;
   size: string;
   quality: string;
@@ -174,6 +209,7 @@ export async function callGenerate(args: {
   return invoke<GenResult>("generate_image", {
     baseUrl: args.baseUrl,
     apiKey: args.apiKey,
+    model: args.model,
     prompt: args.prompt,
     size: args.size,
     quality: args.quality,
@@ -184,6 +220,7 @@ export async function callGenerate(args: {
 export async function callEdit(args: {
   baseUrl: string;
   apiKey: string;
+  model: string;
   prompt: string;
   size: string;
   quality: string;
@@ -193,6 +230,7 @@ export async function callEdit(args: {
   return invoke<GenResult>("edit_image", {
     baseUrl: args.baseUrl,
     apiKey: args.apiKey,
+    model: args.model,
     prompt: args.prompt,
     size: args.size,
     quality: args.quality,
