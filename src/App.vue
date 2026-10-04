@@ -9,6 +9,7 @@ import {
   imageSize,
   loadSettings,
   MODEL_NAME,
+  parsePromptRefs,
   pickDirectory,
   pickImageModels,
   RATIOS,
@@ -22,7 +23,7 @@ import {
 } from "./lib/api";
 
 // ---------------- 状态 ----------------
-const APP_VERSION = "v0.4.0";
+const APP_VERSION = "v0.5.0";
 
 const settings = ref<Settings>(structuredClone(DEFAULT_SETTINGS));
 const settingsLoaded = ref(false);
@@ -247,24 +248,45 @@ async function runOne(): Promise<void> {
   const provider = activeProvider.value;
   if (!provider) return;
   const start = performance.now();
-  const useEdit = refImages.value.length > 0;
+  const useEdit = settings.value.editModeEnabled && refImages.value.length > 0;
+
+  // 编辑模式：解析提示词中的 @N 引用（未引用则发送全部参考图）
+  let imagesToSend = refImages.value.map((r) => r.b64);
+  let promptToSend = prompt.value;
+  if (useEdit && /@\d+/.test(prompt.value)) {
+    const { refs, cleanPrompt, invalid } = parsePromptRefs(prompt.value, refImages.value.length);
+    if (invalid.length > 0) {
+      const msg = `提示词中引用的 @${invalid.join("、@")} 不存在（当前共 ${refImages.value.length} 张参考图，可用 @1 ~ @${refImages.value.length}）`;
+      log(`生成中止：${msg}`, "error");
+      showToast(msg, false);
+      doneCount.value++;
+      failCount.value++;
+      return;
+    }
+    if (refs.length > 0) {
+      imagesToSend = refs.map((n) => refImages.value[n - 1].b64);
+      promptToSend = cleanPrompt;
+      log(`按引用发送参考图：@${refs.join("、@")}（共 ${refs.length} 张）`);
+    }
+  }
+
   try {
     const result = useEdit
       ? await callEdit({
           baseUrl: provider.baseUrl,
           apiKey: provider.apiKey,
           model: provider.selectedModel || MODEL_NAME,
-          prompt: prompt.value,
+          prompt: promptToSend,
           size: outputSizeLabel.value,
           quality: quality.value,
-          imagesB64: refImages.value.map((r) => r.b64),
+          imagesB64: imagesToSend,
           responseFormat: provider.supportsResponseFormat ? "b64_json" : null,
         })
       : await callGenerate({
           baseUrl: provider.baseUrl,
           apiKey: provider.apiKey,
           model: provider.selectedModel || MODEL_NAME,
-          prompt: prompt.value,
+          prompt: promptToSend,
           size: outputSizeLabel.value,
           quality: quality.value,
           responseFormat: provider.supportsResponseFormat ? "b64_json" : null,
@@ -344,7 +366,9 @@ async function generate() {
   }
 }
 
-const useEditText = computed(() => refImages.value.length > 0);
+const useEditText = computed(
+  () => settings.value.editModeEnabled && refImages.value.length > 0,
+);
 
 // ---------------- 下载保存 ----------------
 async function ensureSaveDir(): Promise<string | null> {
@@ -553,55 +577,74 @@ watch(
         style="background: #fff; border-color: rgb(0 0 0 / 0.1)"
       >
         <div class="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-3 pt-5">
-          <!-- 参考图片 -->
+          <!-- 参考图片（编辑模式） -->
           <div class="mb-5" @drop.prevent="onDrop" @dragover.prevent>
             <div class="mb-3 flex items-center justify-between">
               <span class="text-sm font-medium" style="color: #1a1a1a">
-                参考图片<span class="ml-1 text-[10px] font-normal" style="color: #3c3a3a">（拖拽或粘贴可添加）</span>
+                参考图片
+                <span v-if="settings.editModeEnabled" class="text-[10px] font-normal" style="color: #3c3a3a">（拖拽或粘贴可添加，提示词用 @序号 引用）</span>
               </span>
-              <span class="text-xs" style="color: #616161">{{ refImages.length }}/{{ MAX_REFS }}</span>
+              <label class="flex cursor-pointer items-center gap-1.5 text-xs" style="color: #616161" title="开启后可添加参考图并用 @序号 引用进行图片编辑；是否支持取决于所选模型">
+                <input v-model="settings.editModeEnabled" type="checkbox" />
+                编辑模式
+              </label>
             </div>
-            <div class="flex flex-wrap gap-2">
-              <div
-                v-for="img in refImages"
-                :key="img.id"
-                class="group relative h-20 w-20 overflow-hidden rounded-xl border"
-                style="border-color: rgb(0 0 0 / 0.15)"
-              >
-                <img :src="img.dataUrl" class="h-full w-full object-cover" :alt="img.name" />
-                <button
-                  class="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100"
-                  style="background: rgb(0 0 0 / 0.55)"
-                  title="移除"
-                  @click="removeRef(img.id)"
+            <template v-if="settings.editModeEnabled">
+              <div class="flex flex-wrap gap-2">
+                <div
+                  v-for="(img, idx) in refImages"
+                  :key="img.id"
+                  class="group relative h-20 w-20 overflow-hidden rounded-xl border"
+                  style="border-color: rgb(0 0 0 / 0.15)"
                 >
-                  ✕
+                  <img :src="img.dataUrl" class="h-full w-full object-cover" :alt="img.name" />
+                  <span
+                    class="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-md text-[10px] font-semibold text-white"
+                    style="background: rgb(52 106 234 / 0.85)"
+                    title="提示词中用 @序号 引用此图"
+                  >
+                    {{ idx + 1 }}
+                  </span>
+                  <button
+                    class="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100"
+                    style="background: rgb(0 0 0 / 0.55)"
+                    title="移除"
+                    @click="removeRef(img.id)"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <button
+                  v-if="refImages.length < MAX_REFS"
+                  class="flex h-20 w-20 items-center justify-center gap-1.5 rounded-xl border border-dashed text-xs transition-all duration-200 hover:border-[#346aea] hover:text-[#346aea]"
+                  style="border-color: rgb(0 0 0 / 0.15); color: #616161; background: rgb(0 0 0 / 0.03)"
+                  @click="refInput?.click()"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                  添加
                 </button>
               </div>
-              <button
-                v-if="refImages.length < MAX_REFS"
-                class="flex h-20 w-20 items-center justify-center gap-1.5 rounded-xl border border-dashed text-xs transition-all duration-200 hover:border-[#346aea] hover:text-[#346aea]"
-                style="border-color: rgb(0 0 0 / 0.15); color: #616161; background: rgb(0 0 0 / 0.03)"
-                @click="refInput?.click()"
-              >
-                <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
-                添加
-              </button>
-            </div>
-            <input
-              ref="refInput"
-              type="file"
-              accept="image/*"
-              multiple
-              class="hidden"
-              @change="onRefInputChange"
-            />
-            <p v-if="refImages.length > 0" class="mt-1.5">
-              <button class="text-[10px] hover:underline" style="color: #919191" @click="clearRefs">
-                清空全部参考图
-              </button>
+              <input
+                ref="refInput"
+                type="file"
+                accept="image/*"
+                multiple
+                class="hidden"
+                @change="onRefInputChange"
+              />
+              <p v-if="refImages.length > 0" class="mt-1.5">
+                <button class="text-[10px] hover:underline" style="color: #919191" @click="clearRefs">
+                  清空全部参考图
+                </button>
+              </p>
+              <p v-else class="mt-1.5 text-[10px]" style="color: #3c3a3a">
+                提示词中用 @1、@2… 引用对应序号的参考图；不使用 @ 则全部参考图参与编辑
+              </p>
+            </template>
+            <p v-else class="text-[10px] leading-relaxed" style="color: #3c3a3a">
+              勾选右上角"编辑模式"后，可添加参考图并用 @序号 引用进行图片编辑（默认关闭，生成模式不受影响）
             </p>
           </div>
 
@@ -632,7 +675,7 @@ watch(
             >
               <textarea
                 v-model="prompt"
-                placeholder="描述你想生成的图片…"
+                :placeholder="settings.editModeEnabled && refImages.length > 0 ? '描述编辑需求，用 @1、@2 引用参考图…' : '描述你想生成的图片…'"
                 class="h-36 w-full resize-y bg-transparent px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-[#346aea]/20"
                 style="color: #1a1a1a"
               ></textarea>
@@ -1045,6 +1088,20 @@ watch(
             >
               + 添加供应商
             </button>
+
+            <!-- 功能开关 -->
+            <h3 class="mb-3 text-sm font-medium" style="color: #1a1a1a">功能开关</h3>
+            <div class="mb-2 space-y-2 rounded-xl border p-4" style="border-color: rgb(0 0 0 / 0.12)">
+              <label class="flex items-start gap-2 text-xs" style="color: #616161">
+                <input v-model="editSettings.editModeEnabled" type="checkbox" class="mt-0.5" />
+                <span>
+                  <span style="color: #1a1a1a">图片编辑模式</span>
+                  <span class="block text-[10px] leading-relaxed" style="color: #3c3a3a">
+                    开启后可添加参考图，并在提示词中用 @序号 引用进行图片编辑。默认关闭；是否支持取决于所选模型，不支持的模型会返回错误提示
+                  </span>
+                </span>
+              </label>
+            </div>
 
             <!-- 下载设置 -->
             <h3 class="mb-3 text-sm font-medium" style="color: #1a1a1a">下载保存</h3>

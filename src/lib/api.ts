@@ -19,6 +19,8 @@ export interface Provider {
 export interface Settings {
   providers: Provider[];
   activeProviderId: string;
+  /** 图片编辑模式（默认关闭，手动开启） */
+  editModeEnabled: boolean;
   /** 保存格式：png | jpg */
   saveFormat: "png" | "jpg";
   /** 保存目录（桌面端）；为空时首次保存会弹目录选择 */
@@ -59,10 +61,34 @@ export const DEFAULT_SETTINGS: Settings = {
     },
   ],
   activeProviderId: "nowcoding",
+  /** 图片编辑模式（默认关闭，用户手动开启；生成模式始终可用） */
+  editModeEnabled: false,
   saveFormat: "png",
   saveDir: "",
   jpgQuality: 0.95,
 };
+
+/**
+ * 解析提示词中的 @N 参考图引用。
+ * 返回：引用的图序号（1-based，按引用顺序去重）、替换后的提示词、越界的序号。
+ */
+export function parsePromptRefs(
+  prompt: string,
+  refCount: number,
+): { refs: number[]; cleanPrompt: string; invalid: number[] } {
+  const refs: number[] = [];
+  const invalid: number[] = [];
+  const cleanPrompt = prompt.replace(/@(\d+)/g, (_m, num: string) => {
+    const n = parseInt(num, 10);
+    if (n >= 1 && n <= refCount) {
+      if (!refs.includes(n)) refs.push(n);
+      return `第${n}张参考图`;
+    }
+    if (!invalid.includes(n)) invalid.push(n);
+    return `@${num}`;
+  });
+  return { refs, cleanPrompt, invalid };
+}
 
 let storePromise: Promise<Store> | null = null;
 function getStore(): Promise<Store> {

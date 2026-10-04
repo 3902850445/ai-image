@@ -421,7 +421,9 @@ async fn edit_image(
             .file_name(format!("ref_{}.png", i + 1))
             .mime_str("image/png")
             .map_err(|e| format!("构造参考图分片失败：{e}"))?;
-        form = form.part("image", part);
+        // OpenAI 规范：单图字段名为 image，多图为 image[]
+        let field = if images_b64.len() > 1 { "image[]" } else { "image" };
+        form = form.part(field, part);
     }
 
     let client = http_client(300)?;
@@ -464,7 +466,11 @@ async fn edit_image(
         let msg = json["error"]["message"]
             .as_str()
             .unwrap_or("供应商返回了错误");
-        return Err(format!("生成失败（HTTP {}）：{msg}", status.as_u16()));
+        // 编辑模式常见失败：模型不支持参考图/图片编辑——附加提示帮助用户定位
+        return Err(format!(
+            "图片编辑失败（HTTP {}）：{msg}\n提示：当前模型可能不支持图片编辑或所传参考图数量超限，请更换编辑类模型（如 gpt-image 系、gemini-*-image 系）或减少参考图",
+            status.as_u16()
+        ));
     }
 
     let json: serde_json::Value = match serde_json::from_str(&text) {
