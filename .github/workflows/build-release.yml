@@ -77,7 +77,8 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      # runner 镜像自带完整 Android SDK / NDK / 已接受 licenses，无需 setup-android
+      # （setup-android v3 在新镜像上会尝试安装已废弃的 'tools' 包导致 exit 1）
 
       - uses: dtolnay/rust-toolchain@stable
         with:

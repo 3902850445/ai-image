@@ -33,3 +33,6 @@ icon-check.png
 *.njsproj
 *.sln
 *.sw?
+
+# 凭据文件（严禁提交）
+github_key.txt
