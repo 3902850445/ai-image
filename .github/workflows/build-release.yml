@@ -2,11 +2,15 @@ name: build-release
 
 # 云端四平台打包：推 v* 标签或手动触发
 # 产物：Windows NSIS 安装包 / macOS DMG / Linux DEB+AppImage / Android debug APK
+# 构建完成后自动创建 GitHub Release 并挂载全部安装包
 on:
   workflow_dispatch:
   push:
     tags:
       - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
   desktop:
@@ -55,12 +59,20 @@ jobs:
       - name: 构建
         run: npx tauri build --bundles ${{ matrix.bundles }}
 
-      - name: 上传产物
+      - name: 上传产物（Artifacts）
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.artifact-path }}
           if-no-files-found: error
+
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ai-image ${{ github.ref_name }}
+          files: ${{ matrix.artifact-path }}
+          fail_on_unmatched_files: false
 
   android:
     runs-on: ubuntu-22.04
@@ -94,9 +106,17 @@ jobs:
       - name: 构建 debug APK
         run: npm run tauri android build -- --apk --debug
 
-      - name: 上传产物
+      - name: 上传产物（Artifacts）
         uses: actions/upload-artifact@v4
         with:
           name: android-apk-debug
           path: src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
           if-no-files-found: error
+
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ai-image ${{ github.ref_name }}
+          files: src-tauri/gen/android/app/build/outputs/apk/universal/debug/*.apk
+          fail_on_unmatched_files: false
